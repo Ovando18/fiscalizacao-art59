@@ -1,12 +1,20 @@
 """Módulo 4 — Investigação de Atuação (OSINT) e encaminhamento para fiscalização in-loco."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from database import db_manager as db
 from services.osint_helper import gerar_links
 from services.utils import fmt_data, fmt_data_hora
 from ui import components as ui
+
+@st.cache_data(ttl=600, show_spinner=False, max_entries=200)
+def _ler_evidencia(chave: str) -> bytes | None:
+    """Evita baixar a mesma evidência do Storage a cada interação."""
+    return db.ler_evidencia(chave)
+
 
 STATUS_INVESTIGACAO = [db.ST_PRAZO_ENCERRADO, db.ST_ATUACAO_CONFIRMADA, db.ST_VISITA_IN_LOCO]
 
@@ -83,8 +91,12 @@ def render() -> None:
             if indicios and not (texto.strip() or arquivos or emp["arquivos"]):
                 st.error("Descreva ou anexe as evidências dos indícios localizados.")
             else:
-                for arq in arquivos or []:
-                    db.adicionar_evidencia(empresa_id, arq.name, arq.getvalue())
+                try:
+                    for arq in arquivos or []:
+                        db.adicionar_evidencia(empresa_id, arq.name, arq.getvalue())
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Falha ao gravar a evidência: {exc}. A diligência não foi concluída.")
+                    st.stop()
                 novo = db.registrar_investigacao(empresa_id, indicios, texto.strip(), usuario)
                 if novo == db.ST_VISITA_IN_LOCO:
                     st.toast("Sem indícios: encaminhada para visita in-loco.", icon="📍")
@@ -97,11 +109,17 @@ def render() -> None:
         if emp["arquivos"]:
             st.markdown(f"**Evidências anexadas ({len(emp['arquivos'])})**")
             for a in emp["arquivos"]:
-                caminho = db.BASE_DIR / a["caminho"]
                 c1, c2 = st.columns([4, 1], vertical_alignment="center")
                 c1.caption(f"📎 {a['nome_original']} · {fmt_data_hora(a['enviado_em'])}")
-                if caminho.exists():
-                    c2.download_button("Baixar", caminho.read_bytes(), file_name=a["nome_original"],
-                                       key=f"dl_{a['id']}", width="stretch")
-                    if caminho.suffix.lower() in (".png", ".jpg", ".jpeg"):
-                        st.image(str(caminho), width=320)
+                try:
+                    conteudo = _ler_evidencia(a["caminho"])
+                except Exception as exc:  # noqa: BLE001
+                    c1.error(f"Não foi possível carregar o arquivo: {exc}")
+                    continue
+                if conteudo is None:
+                    c1.warning("Arquivo não encontrado no armazenamento.")
+                    continue
+                c2.download_button("Baixar", conteudo, file_name=a["nome_original"],
+                                   key=f"dl_{a['id']}", width="stretch")
+                if Path(a["caminho"]).suffix.lower() in (".png", ".jpg", ".jpeg"):
+                    st.image(conteudo, width=320)

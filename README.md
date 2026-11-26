@@ -96,21 +96,46 @@ A assinatura automática do Zimbra é inserida pelo **cliente web** quando se co
 3. Confira formatação, logo e assinatura.
 4. Em **Importação e Lotes › Gerenciar lotes**, exclua o lote de teste. A exclusão remove empresas, histórico, evidências e o log de envios, então as métricas e o aquecimento ficam limpos.
 
-## Migração para PostgreSQL / Supabase
+## Supabase e publicação no Streamlit Cloud
 
-A camada de dados usa SQLAlchemy ORM com tipos portáveis. Para migrar:
+O disco do Streamlit Cloud é **apagado a cada reinício**. Em produção, os dados ficam no **Supabase**:
 
-```bash
-pip install psycopg2-binary
-```
+| O quê | Onde | Variáveis |
+|---|---|---|
+| Empresas, histórico, envios e configurações | PostgreSQL do Supabase | `DATABASE_URL` |
+| Prints e comprovantes (evidências) | Supabase Storage, bucket **privado** `evidencias` | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` |
 
-Depois, defina no `.env`:
+Sem essas variáveis, o sistema usa o SQLite local e a pasta `evidencias/`. A barra lateral sempre mostra onde os dados estão sendo gravados.
 
-```
-DATABASE_URL=postgresql+psycopg2://usuario:senha@host:5432/banco
-```
+### 1. Obter as credenciais no Supabase
 
-As tabelas são criadas automaticamente. Para levar os dados do SQLite, exporte as tabelas (por exemplo, com `pandas.read_sql` / `to_sql`).
+1. **String de conexão:** no painel do projeto, clique em **Connect** e copie a URI do **Session pooler** (porta 5432). Ela tem este formato:
+   ```
+   postgresql://postgres.SEU_PROJETO:[SENHA]@aws-0-REGIAO.pooler.supabase.com:5432/postgres
+   ```
+   > Use o **Session pooler**, não a *Direct connection*. A conexão direta usa apenas IPv6, que o Streamlit Cloud não suporta.
+   > Troque `[SENHA]` pela senha do banco (*Project Settings › Database › Reset database password*, se não souber). Se a senha tiver caracteres especiais (`@ : / # ?`), codifique-os (por exemplo, `@` vira `%40`), ou use uma senha só com letras e números.
+2. **Chave da API:** em *Project Settings › API Keys*, copie uma **Secret key** (`sb_secret_...`) ou a chave legada **service_role**. **Nunca** use a *publishable/anon key*: o bucket é privado.
+3. **URL do projeto:** `https://SEU_PROJETO.supabase.co`.
+
+Na primeira execução, o sistema faz duas coisas sozinho:
+- cria as tabelas e **ativa o RLS** (Row Level Security) em todas elas. Assim a API pública do Supabase não consegue ler nem gravar os dados; só o aplicativo, que conecta como dono das tabelas, tem acesso;
+- cria o bucket privado `evidencias` (e recusa funcionar se ele estiver público).
+
+### 2. Publicar no Streamlit Cloud
+
+1. Em [share.streamlit.io](https://share.streamlit.io), clique em **Create app** e escolha este repositório, branch `main` e arquivo `app.py`.
+2. Em *Advanced settings*, escolha **Python 3.12** e cole os Secrets conforme o modelo [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example).
+3. Depois do deploy:
+   - confira na barra lateral se aparece **Banco: PostgreSQL** e **Evidências: Supabase Storage**;
+   - use **Template e Disparo › Servidor SMTP › Testar Conexão**. O Zimbra pode bloquear logins vindos de IPs fora do Brasil; nesse caso, peça liberação à TI.
+4. Em *Settings › Sharing*, restrinja o acesso aos e-mails da equipe do DFI.
+
+> ⚠️ **Um operador por vez na fila de disparo.** A fila ainda não tem trava para vários usuários simultâneos: duas pessoas disparando ao mesmo tempo podem enviar e-mail duplicado para a mesma empresa.
+
+### Rodar localmente usando o Supabase
+
+Copie `.streamlit/secrets.toml.example` para `.streamlit/secrets.toml` (ou preencha o `.env`) e execute `streamlit run app.py`.
 
 ## Estrutura
 
@@ -123,6 +148,8 @@ fiscalizacao-art59/
 │   ├── mailer.py               # SMTP Zimbra, MIME, janela, jitter, logs
 │   ├── osint_helper.py         # links/dorks de investigação
 │   ├── report_generator.py     # dossiê em PDF (fpdf2)
+│   ├── storage.py              # evidências: disco local ou Supabase Storage
+│   ├── config.py               # leitura de .env e Secrets do Streamlit
 │   └── utils.py                # CNPJ, e-mail, datas/fuso, extenso
 ├── templates/email_template.html
 ├── ui/components.py            # CSS institucional e componentes

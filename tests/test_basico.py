@@ -53,3 +53,20 @@ def test_mensagem_mime():
     msg = mailer.construir_mensagem(cfg, "a@b.com", em["assunto"], em["html"], True)
     tipos = [p.get_content_type() for p in msg.walk()]
     assert tipos[0] == "multipart/alternative" and "text/plain" in tipos and "text/html" in tipos
+
+
+def test_storage_local_e_url(tmp_path):
+    from services.storage import ErroArmazenamento, LocalStorage
+    st = LocalStorage(tmp_path)
+    st.salvar("11222333000181/a.png", b"x")
+    assert st.ler("11222333000181/a.png") == b"x"
+    assert st.ler("evidencias/11222333000181/a.png") == b"x"   # registros antigos
+    st.excluir_prefixo("11222333000181")
+    assert st.ler("11222333000181/a.png") is None
+    try:
+        st.ler("../../etc/passwd")
+        raise AssertionError("deveria bloquear path traversal")
+    except ErroArmazenamento:
+        pass
+    assert db._normalizar_url("postgres://u:p@h:5432/d") == "postgresql+psycopg2://u:p@h:5432/d"
+    assert db._normalizar_url("postgresql://u:p@h/d").startswith("postgresql+psycopg2://")

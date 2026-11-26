@@ -6,6 +6,7 @@ Caracteres fora do Latin-1 (travessões, aspas tipográficas, emojis) são norma
 """
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 from fpdf import FPDF
@@ -226,21 +227,25 @@ def gerar_dossie(empresa_id: int, responsavel_nome: str = "", responsavel_cargo:
         pdf.cell(0, 5, _t(f"Evidências anexadas ({len(arquivos)}):"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_text_color(30, 30, 30)
         for i, arq in enumerate(arquivos, 1):
-            caminho = BASE_DIR / arq["caminho"]
+            extensao = Path(arq["caminho"]).suffix.lower()
             pdf.set_font("Helvetica", "", 8.5)
             pdf.multi_cell(0, 4.5, _t(f"Anexo {i}: {arq['nome_original']} "
                                       f"(incluído em {fmt_data_hora(arq['enviado_em'])})"),
                            new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-            if caminho.suffix.lower() in (".png", ".jpg", ".jpeg") and caminho.exists():
+            if extensao in (".png", ".jpg", ".jpeg"):
                 try:
+                    conteudo = db.ler_evidencia(arq["caminho"])
+                    if conteudo is None:
+                        raise FileNotFoundError(arq["caminho"])
                     if pdf.get_y() > 170:
                         pdf.add_page()
-                    pdf.image(str(caminho), x=pdf.l_margin, w=120, keep_aspect_ratio=True, h=90)
+                    pdf.image(io.BytesIO(conteudo), x=pdf.l_margin, w=120, keep_aspect_ratio=True, h=90)
                     pdf.ln(3)
-                except Exception:  # noqa: BLE001 - imagem corrompida não deve impedir o dossiê
+                except Exception:  # noqa: BLE001 - imagem indisponível não deve impedir o dossiê
                     pdf.paragrafo("(imagem não pôde ser incorporada)", 8, "I")
-            elif caminho.suffix.lower() == ".pdf":
-                pdf.paragrafo(f"Documento PDF arquivado em: {arq['caminho']}", 8, "I")
+            elif extensao == ".pdf":
+                pdf.paragrafo(f"Documento PDF arquivado no repositório de evidências: {arq['caminho']}",
+                              8, "I")
 
     # 5. Histórico cronológico
     pdf.secao("5. HISTÓRICO CRONOLÓGICO")

@@ -16,27 +16,38 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+import unicodedata
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
-from dotenv import load_dotenv
 from sqlalchemy import (Boolean, Date, DateTime, ForeignKey, Integer, String, Text,
-                        create_engine, func, select)
+                        create_engine, func, select, text)
 from sqlalchemy.orm import (DeclarativeBase, Mapped, Session, mapped_column, relationship,
                             sessionmaker)
 
+from services.config import carregar_configuracao
+from services.storage import obter_storage
 from services.utils import agora_local, calcular_data_limite, hoje_local
 
-load_dotenv()
+carregar_configuracao()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = BASE_DIR / "database" / "fiscalizacao_art59.db"
-EVIDENCIAS_DIR = BASE_DIR / "evidencias"
 
-DATABASE_URL = os.getenv("DATABASE_URL") or f"sqlite:///{DB_PATH.as_posix()}"
+
+def _normalizar_url(url: str) -> str:
+    """Aceita a string copiada do Supabase ('postgresql://' ou 'postgres://') e fixa o driver psycopg2."""
+    url = url.strip()
+    for prefixo in ("postgres://", "postgresql://"):
+        if url.startswith(prefixo):
+            return "postgresql+psycopg2://" + url[len(prefixo):]
+    return url
+
+
+DATABASE_URL = _normalizar_url(os.getenv("DATABASE_URL") or f"sqlite:///{DB_PATH.as_posix()}")
+USA_POSTGRES = DATABASE_URL.startswith("postgresql")
 
 # --------------------------------------------------------------------------- #
 # Status do fluxo de fiscalização
@@ -172,15 +183,35 @@ class Configuracao(Base):
 # --------------------------------------------------------------------------- #
 # Engine / sessão
 # --------------------------------------------------------------------------- #
-_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=_connect_args, future=True)
+if USA_POSTGRES:
+    # Supabase exige SSL. pool_pre_ping/pool_recycle evitam conexões derrubadas pelo pooler.
+    engine = create_engine(
+        DATABASE_URL, future=True, pool_pre_ping=True, pool_recycle=300, pool_size=3, max_overflow=2,
+        connect_args={"sslmode": os.getenv("DATABASE_SSLMODE", "require"), "connect_timeout": 15,
+                      "application_name": "dfi-art59"},
+    )
+else:
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False}, future=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
+def descricao_backend() -> dict:
+    """Onde os dados estão sendo gravados (exibido na barra lateral)."""
+    return {"banco": f"PostgreSQL ({engine.url.host})" if USA_POSTGRES else "SQLite local",
+            "evidencias": obter_storage().nome, "persistente": USA_POSTGRES}
+
+
 def init_db() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    EVIDENCIAS_DIR.mkdir(parents=True, exist_ok=True)
+    if not USA_POSTGRES:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(engine)
+    if USA_POSTGRES and engine.dialect.name == "postgresql":
+        # No Supabase o schema "public" é exposto pela API REST (Data API). Com RLS ativo e
+        # nenhuma policy, a API não lê nem grava nada; o app (dono das tabelas) não é afetado.
+        with engine.begin() as con:
+            for tabela in Base.metadata.sorted_tables:
+                con.execute(text(f'ALTER TABLE "{tabela.name}" ENABLE ROW LEVEL SECURITY'))
+    obter_storage().preparar()
 
 
 @contextmanager
@@ -289,16 +320,22 @@ def excluir_lote(lote_id: int) -> dict:
         if lote is None:
             return {"empresas": 0, "envios": 0}
         empresas = list(s.scalars(select(Empresa).where(Empresa.lote_id == lote_id)))
+        com_arquivos = [emp.cnpj_limpo for emp in empresas if emp.arquivos]
         for emp in empresas:
-            pasta = EVIDENCIAS_DIR / emp.cnpj_limpo
-            if pasta.exists():
-                shutil.rmtree(pasta, ignore_errors=True)
             s.delete(emp)
         envios = list(s.scalars(select(Envio).where(Envio.lote_id == lote_id)))
         for env in envios:
             s.delete(env)
         s.delete(lote)
-        return {"empresas": len(empresas), "envios": len(envios)}
+        resultado = {"empresas": len(empresas), "envios": len(envios)}
+    # Arquivos só são apagados depois que a exclusão no banco foi confirmada
+    storage = obter_storage()
+    for cnpj in com_arquivos:
+        try:
+            storage.excluir_prefixo(cnpj)
+        except Exception:  # noqa: BLE001 - arquivo órfão não deve impedir a exclusão do lote
+            pass
+    return resultado
 
 
 # --------------------------------------------------------------------------- #
@@ -511,18 +548,25 @@ def registrar_investigacao(empresa_id: int, indicios: bool, texto: str, usuario:
     return novo
 
 
+def _nome_seguro(nome: str) -> str:
+    # Chaves do Storage aceitam apenas ASCII seguro
+    nome = unicodedata.normalize("NFKD", nome).encode("ascii", "ignore").decode()
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in nome)[-120:] or "arquivo"
+
+
 def adicionar_evidencia(empresa_id: int, nome_original: str, conteudo: bytes) -> str:
+    """Grava o arquivo no armazenamento configurado e registra no banco. Retorna a chave."""
     with sessao() as s:
         emp = s.get(Empresa, empresa_id)
-        pasta = EVIDENCIAS_DIR / emp.cnpj_limpo
-        pasta.mkdir(parents=True, exist_ok=True)
-        nome_seguro = "".join(c if c.isalnum() or c in "._-" else "_" for c in nome_original)
-        destino = pasta / f"{_agora().strftime('%Y%m%d_%H%M%S')}_{nome_seguro}"
-        destino.write_bytes(conteudo)
-        s.add(EvidenciaArquivo(empresa_id=emp.id, nome_original=nome_original,
-                               caminho=str(destino.relative_to(BASE_DIR))))
+        chave = f"{emp.cnpj_limpo}/{_agora().strftime('%Y%m%d_%H%M%S')}_{_nome_seguro(nome_original)}"
+        obter_storage().salvar(chave, conteudo)
+        s.add(EvidenciaArquivo(empresa_id=emp.id, nome_original=nome_original, caminho=chave))
         _registrar(s, emp.id, "Evidência anexada", nome_original)
-        return str(destino)
+        return chave
+
+
+def ler_evidencia(chave: str) -> bytes | None:
+    return obter_storage().ler(chave)
 
 
 def adicionar_observacao(empresa_id: int, texto: str, usuario: str | None) -> None:

@@ -26,7 +26,17 @@ def _inicializar_banco() -> bool:
     return True
 
 
-_inicializar_banco()
+try:
+    _inicializar_banco()
+except Exception as exc:  # noqa: BLE001
+    ui.aplicar_estilo()
+    st.error("**Não foi possível conectar ao banco de dados ou ao armazenamento de evidências.**\n\n"
+             "Verifique `DATABASE_URL`, `SUPABASE_URL` e `SUPABASE_SERVICE_KEY` nos Secrets / `.env` "
+             "(veja a seção *Supabase* do README).")
+    with st.expander("Detalhes técnicos"):
+        # Oculta a senha caso apareça na mensagem do driver
+        st.code(str(exc).replace(db.engine.url.password or "\0", "****"), language=None)
+    st.stop()
 
 # A cada carregamento, notificações com prazo esgotado seguem para investigação
 _vencidas = db.atualizar_prazos_vencidos()
@@ -61,6 +71,8 @@ with st.sidebar:
     if st.session_state.get("fila_rodando"):
         st.info("📤 Fila de envio ativa. Os envios só prosseguem com a página "
                 "*Template e Disparo* aberta.")
+    _backend = db.descricao_backend()
+    st.caption(f"💾 Banco: **{_backend['banco']}**  \n📎 Evidências: **{_backend['evidencias']}**")
     st.caption("Crea-MS · Departamento de Fiscalização\n\n"
                "0800 368 1000 · dfi@creams.org.br")
 
