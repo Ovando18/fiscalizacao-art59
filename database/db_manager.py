@@ -39,8 +39,10 @@ DB_PATH = BASE_DIR / "database" / "fiscalizacao_art59.db"
 
 def _normalizar_url(url: str) -> str:
     """Aceita a string copiada do Supabase ('postgresql://' ou 'postgres://') e fixa o driver psycopg2."""
-    url = url.strip()
-    for prefixo in ("postgres://", "postgresql://"):
+    # Obs.: no SQLAlchemy 2.1 o driver padrão de "postgresql://" passou a ser o psycopg 3,
+    # que não está no requirements — por isso o driver é fixado explicitamente.
+    url = url.strip().strip('"').strip("'")
+    for prefixo in ("postgres://", "postgresql://", "postgresql+psycopg://"):
         if url.startswith(prefixo):
             return "postgresql+psycopg2://" + url[len(prefixo):]
     return url

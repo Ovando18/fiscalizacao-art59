@@ -70,3 +70,6 @@ def test_storage_local_e_url(tmp_path):
         pass
     assert db._normalizar_url("postgres://u:p@h:5432/d") == "postgresql+psycopg2://u:p@h:5432/d"
     assert db._normalizar_url("postgresql://u:p@h/d").startswith("postgresql+psycopg2://")
+    assert db._normalizar_url(" postgresql+psycopg://u:p@h/d ").startswith("postgresql+psycopg2://")
+    from sqlalchemy.engine import make_url
+    assert make_url(db._normalizar_url("postgresql://u:p@h/d")).get_dialect().driver == "psycopg2"
