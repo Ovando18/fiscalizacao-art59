@@ -1,0 +1,32 @@
+# Segredos e configurações locais
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Banco de dados e dados sensíveis
+*.db
+*.db-journal
+*.sqlite3
+database/*.db
+evidencias/
+logs/
+
+# Python / cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Temporários / SO / IDE
+*.tmp
+*.log
+~$*.xlsx
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
