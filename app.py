@@ -33,9 +33,23 @@ except Exception as exc:  # noqa: BLE001
     st.error("**Não foi possível conectar ao banco de dados ou ao armazenamento de evidências.**\n\n"
              "Verifique `DATABASE_URL`, `SUPABASE_URL` e `SUPABASE_SERVICE_KEY` nos Secrets / `.env` "
              "(veja a seção *Supabase* do README).")
-    with st.expander("Detalhes técnicos"):
-        # Oculta a senha caso apareça na mensagem do driver
-        st.code(str(exc).replace(db.engine.url.password or "\0", "****"), language=None)
+    from services import diagnostico
+
+    st.markdown("#### 🔍 Diagnóstico")
+    st.caption("Configuração lida dos Secrets (senhas e chaves não são exibidas):")
+    st.table(diagnostico.resumo_configuracao())
+    with st.spinner("Testando conexões…"):
+        testes = diagnostico.testar_conexoes()
+    for t in testes:
+        if t["ok"]:
+            st.success(f"**{t['etapa']}:** conexão OK")
+        else:
+            st.error(f"**{t['etapa']}:** falhou\n\n**Provável causa:** {t['dica']}")
+            st.code(t["erro"][:1500], language=None)
+    if all(t["ok"] for t in testes):
+        st.warning("As conexões funcionam, mas a criação das tabelas falhou:")
+        st.code(diagnostico._mascarar(str(exc))[:1500], language=None)
+    st.caption("Depois de corrigir os Secrets, use **Manage app › ⋮ › Reboot app**.")
     st.stop()
 
 # A cada carregamento, notificações com prazo esgotado seguem para investigação
